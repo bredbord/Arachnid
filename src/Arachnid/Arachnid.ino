@@ -18,7 +18,7 @@ uint8_t DMXInput[DMX_LENGTH]{0};
 
 constexpr unsigned long kDMXTimeout = 100;  // Millis for considered DMX timeout
 constexpr unsigned long kFloatLockTimeout = 2000;  // Millis for Floating Lock timeout
-unsigned long kStepperTimeout = 15000;  // Millis for stepper timeout
+unsigned long kStepperTimeout;  // Millis for stepper timeout
 
 // Timers
 elapsedMillis lastFrameTimer;  // when last DMX frame was received -- for float Lock
@@ -120,6 +120,15 @@ void runSteppers() {
   // If we have not timed out-------------------------------
   if (lastStepperChange < kStepperTimeout) {
     if (!steppersEnabled) { enableSteppers(true); delay(10); }  // if the steppers are not enabled, enable and allow hardware catch up
+
+    if (lastStepperChange > kStepperTimeout - 3000) { 
+      int lockVal;
+      for (int h = 0; h < NUM_STEPPERS; h++) {
+        lockVal = 0;
+        stepperPositions[h] = lockVal;
+        newStepperPositions[h] = lockVal;
+      }
+    }
     
     for (byte m = 0; m < NUM_STEPPERS; m++) { stepper[m]->moveTo(stepperPositions[m]); }
     for (byte m = 0; m < NUM_STEPPERS; m++) { stepper[m]->run(); }
