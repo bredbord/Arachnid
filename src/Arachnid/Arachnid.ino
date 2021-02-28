@@ -14,7 +14,8 @@
 // DMX -----------------------------------------------
 namespace teensydmx = ::qindesign::teensydmx;
 teensydmx::Receiver dmxRx{Serial1};
-uint8_t DMXInput[DMX_LENGTH]{0};
+uint8_t DMXData[DMX_LENGTH]{0};
+uint8_t DMXInput[DMX_LENGTH]{0};  // future buffering
 
 constexpr unsigned long kDMXTimeout = 100;  // Millis for considered DMX timeout
 constexpr unsigned long kFloatLockTimeout = 2000;  // Millis for Floating Lock timeout
@@ -24,11 +25,13 @@ unsigned long kStepperTimeout;  // Millis for stepper timeout
 elapsedMillis lastFrameTimer;  // when last DMX frame was received -- for float Lock
 elapsedMillis floatLockTimer;  // timer for the float lock
 elapsedMillis lastStepperChange;    // when last stepper change
+elapsedMillis lastDMXChange;  // when the DMX last changed
 
 bool floatLock = false;
 
 // The LED pin.
-constexpr uint8_t kLEDPin = LED_BUILTIN;
+constexpr uint8_t statusLEDPin = STATUS_LED_PIN;
+uint8_t statusLEDBrightness = 0;
 
 
 // Steppers-------------------------------------------
@@ -44,15 +47,17 @@ int limitPins[NUM_SWITCHES] = {11, 25, 28, 31, 19, 40, 37, 34};
 // PROTOTYPES-----------------------------------------
 
 bool homeFixtures(byte, byte, int);
+bool allHome();
 bool compareDMXArrays();
 void updateStepperDMX();
+bool updateDMX();
 void runSteppers();
 void stopWithError();
 
 void setup() {
   
   // HARD CALL PIN SETUP-------------------------------
-  pinMode(kLEDPin, OUTPUT);
+  pinMode(statusLEDPin, OUTPUT);
   pinMode(STEPPER_SLEEP_PIN, OUTPUT);
   pinMode(STEPPER_ENABLE_PIN, OUTPUT);
 
@@ -79,13 +84,17 @@ void loop() {
   if (read > 0) lastFrameTimer = 0;  // some DMX data received
 
   // DMX------------------------------------
-  if (!floatLock && lastFrameTimer <= kDMXTimeout) { // if we are not in floatLock, and the DMX is valid
+  if (!floatLock && lastFrameTimer <= kDMXTimeout) { // if we are not in floatLock, and the DMX connection is valid
     floatLockTimer = 0;  // reset float locking timer
-    kStepperTimeout = STEPPER_DMX_TIMEOUT; //set stepper timeout to 3 min
-    analogWrite(kLEDPin, 1023);
+    kStepperTimeout = STEPPER_DMX_TIMEOUT; //set stepper timeout to 30 seconds
 
-    // while we have active DMX
-    updateStepperDMX();  // update their positions based on DMX
+    if (updateDMX()) { lastDMXChange = 0; statusLEDBrightness = 127; }  // if we see a DMX change, reset the counter
+    statusLEDBrightness = LED_DMX_RX_ACTIVE;
+    
+    if (lastDMXChange < kStepperTimeout - MOTION_TIMEOUT_DURATION) updateStepperDMX();  // if there is new DMX within the pre-time-out, update based on DMX
+    else { statusLEDBrightness = LED_DMX_RX_SLEEP; }
+    // otherwise, we are't seeing any new data from lighting software, so ignore DMX, move to nearest holding lock, disable to save power, and hold there until new DMX
+
   } 
 
   // NO DMX---------------------------------
@@ -94,10 +103,15 @@ void loop() {
     if (!floatLock && floatLockTimer < kDMXTimeout * 2) floatLock = true; // if the floatLock is not enabled, and the disconection just started, enable the lock
     if (floatLock && floatLockTimer > kFloatLockTimeout) floatLock = false;  // if we are in floatLock, and the locking timer has expired, release the lock
 
-    kStepperTimeout = STEPPER_STANDALONE_TIMEOUT; //set stepper timeout to 30 seconds
+    statusLEDBrightness = LED_STDBY;
+    analogWrite(statusLEDPin, statusLEDBrightness);
     
-    analogWrite(kLEDPin, 0);
+    if (allHome()) kStepperTimeout = 500; //if everything is at its endstops, timeout doesn't need to take forever.
+    else kStepperTimeout = STEPPER_STANDALONE_TIMEOUT; //set stepper timeout to 10 seconds
+    
   }
+
+  analogWrite(statusLEDPin, statusLEDBrightness);
 
   // STEPPER UPDATING----------------------
   runSteppers();
@@ -109,7 +123,7 @@ void runSteppers() {
   // check for any updates to position, update positions, and reset timeout if any occur
   for (int s = 0; s < NUM_STEPPERS; s++) {
     currentPos = stepperPositions[s];
-    newPos = newStepperPositions[s];
+    newPos = newStepperPositions[s];  // updates continously* based on DMX
     
     if (currentPos != newPos) {  // if we have a new position request
       stepperPositions[s] = newPos; // update position index
@@ -121,7 +135,7 @@ void runSteppers() {
   if (lastStepperChange < kStepperTimeout) {
     if (!steppersEnabled) { enableSteppers(true); delay(10); }  // if the steppers are not enabled, enable and allow hardware catch up
 
-    if (lastStepperChange > kStepperTimeout - 3000) { 
+    if (lastStepperChange > kStepperTimeout - MOTION_TIMEOUT_DURATION) { 
       int lockVal;
       for (int h = 0; h < NUM_STEPPERS; h++) {
         lockVal = 0;
@@ -188,23 +202,43 @@ void updateStepperDMX() {
     DMXOffset = (s * OPERATIONS_PER_FIXTURE);  // calculate the DMX data location
 
     // Speed Section-------------------------------------------------------
-    if(DMXInput[DMXOffset + 1] == 0) speedTarget = DEFUALT_MAX_SPEED;
-    else speedTarget = map(DMXInput[DMXOffset+1], 1, 255, ABS_STEPPER_MIN_SPEED, ABS_STEPPER_MAX_SPEED);
+    if(DMXData[DMXOffset + 1] == 0) speedTarget = DEFUALT_MAX_SPEED;
+    else speedTarget = map(DMXData[DMXOffset+1], 1, 255, ABS_STEPPER_MIN_SPEED, ABS_STEPPER_MAX_SPEED);
     stepper[s]->setMaxSpeed(speedTarget);  // map the acceleration from the DMX input
 
     // Motion Section------------------------------------------------------
-    motionTarget = DMXInput[DMXOffset] * MICROSTEPS*4;  // get the new stepper position
+    motionTarget = DMXData[DMXOffset] * MICROSTEPS*4;  // get the new stepper position
     newStepperPositions[s] = motionTarget;
   }
+}
+
+bool updateDMX() {
+  bool updateFlag = false;
+  uint8_t current, compare;
+  
+  // Compare the array
+  for (int c = 0; c < DMX_LENGTH; c++) {
+    current = DMXData[c]; compare = DMXInput[c];
+    if (current != compare) { DMXData[c] = compare; updateFlag = true; }  // if there was a change, note it and trigger update flag
+  }
+
+  return updateFlag;
+}
+
+bool allHome() {
+  for (byte s = 0; s <= NUM_STEPPERS; s++) {  // check each stepper
+    if (!digitalRead(limitPins[s]) == LOW) return false;  // for triggered limit switch
+  }
+  return true;
 }
 
 void stopWithError() {
   enableSteppers(false);
   
   while (true) {
-    analogWrite(kLEDPin, 1023);
+    analogWrite(statusLEDPin, 1023);
     delay(1000);
-    analogWrite(kLEDPin, 0);
+    analogWrite(statusLEDPin, 0);
     delay(1000);
   }
   
