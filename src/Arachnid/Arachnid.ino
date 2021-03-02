@@ -9,19 +9,9 @@
 #include <AccelStepper.h>
 #include "config.h"
 
-// HARDWARE SETUP==============================================================
+#include <OctoWS2811.h>
 
-// DMX -----------------------------------------------
-namespace teensydmx = ::qindesign::teensydmx;
-teensydmx::Receiver dmxRx{Serial1};
-uint8_t DMXData[DMX_LENGTH]{0};
-uint8_t DMXInput[DMX_LENGTH]{0};  // future buffering
-
-constexpr unsigned long kDMXTimeout = 100;  // Millis for considered DMX timeout
-constexpr unsigned long kFloatLockTimeout = 2000;  // Millis for Floating Lock timeout
-unsigned long kStepperTimeout;  // Millis for stepper timeout
-
-// Timers
+// Timers---------
 elapsedMillis lastFrameTimer;  // when last DMX frame was received -- for float Lock
 elapsedMillis floatLockTimer;  // timer for the float lock
 elapsedMillis lastStepperChange;    // when last stepper change
@@ -29,10 +19,11 @@ elapsedMillis lastDMXChange;  // when the DMX last changed
 
 bool floatLock = false;
 
-// The LED pin.
+// HARDWARE SETUP==============================================================
+
+// Onboard pins--------------------------------------
 constexpr uint8_t statusLEDPin = STATUS_LED_PIN;
 uint8_t statusLEDBrightness = 0;
-
 
 // Steppers-------------------------------------------
 AccelStepper M1(1,10,9), M2(1,24,12), M3(1,27,26), M4(1,30,29), M5(1,23,22), M6(1,18,17), M7(1,39,38), M8(1,36,35);
@@ -44,13 +35,64 @@ bool steppersEnabled;
 // Buttons--------------------------------------------
 int limitPins[NUM_SWITCHES] = {11, 25, 28, 31, 19, 40, 37, 34};
 
+// LEDS-----------------------------------------------
+
+// These buffers need to be large enough for all the pixels.
+// The total number of pixels is "ledsPerStrip * numPins".
+// Each pixel needs 3 bytes, so multiply by 3.  An "int" is
+// 4 bytes, so divide by 4.  The array is created using "int"
+// so the compiler will align it to 32 bit memory.
+DMAMEM int displayMemory[NUM_LEDS * 3 / 4];
+int drawingMemory[NUM_LEDS * 3 / 4];
+
+const int config = WS2811_GBR | WS2811_800kHz;
+OctoWS2811 leds(LEDS_PER_FIXTURE, displayMemory, drawingMemory, config, NUM_LED_FIXTURES, LED_PIN_LIST);
+
+byte ledColors[NUM_LEDS][3]{0};  // data for holding each pixel's data
+
+// LED COLOR TEMP CORRECTIONS from FastLED
+/*
+enum LEDColorCorrection {
+  TypicalSMD5050 =0xFFB0F0, TypicalLEDStrip =0xFFB0F0, Typical8mmPixel =0xFFE08C, TypicalPixelString =0xFFE08C,
+  UncorrectedColor =0xFFFFFF
+}
+
+enum ColorTemperature {
+  Candle =0xFF9329, Tungsten40W =0xFFC58F, Tungsten100W =0xFFD6AA, Halogen =0xFFF1E0,
+  CarbonArc =0xFFFAF4, HighNoonSun =0xFFFFFB, DirectSunlight =0xFFFFFF, OvercastSky =0xC9E2FF,
+  ClearBlueSky =0x409CFF, WarmFluorescent =0xFFF4E5, StandardFluorescent =0xF4FFFA, CoolWhiteFluorescent =0xD4EBFF,
+  FullSpectrumFluorescent =0xFFF4F2, GrowLightFluorescent =0xFFEFF7, BlackLightFluorescent =0xA700FF, MercuryVapor =0xD8F7FF,
+  SodiumVapor =0xFFD1B2, MetalHalide =0xF2FCFF, HighPressureSodium =0xFFB74C, UncorrectedTemperature =0xFFFFFF
+}
+*/
+
+// DMX -----------------------------------------------
+namespace teensydmx = ::qindesign::teensydmx;
+teensydmx::Receiver dmxRx{Serial1};
+uint8_t DMXData[DMX_LENGTH]{0};
+uint8_t DMXInput[DMX_LENGTH]{0};  // future buffering
+
+constexpr unsigned long kDMXTimeout = 100;  // Millis for considered DMX timeout
+constexpr unsigned long kFloatLockTimeout = 2000;  // Millis for Floating Lock timeout
+unsigned long kStepperTimeout;  // Millis for stepper timeout
+
+//END HARDWARE SETUP ======================
+
+
+
 // PROTOTYPES-----------------------------------------
 
 bool homeFixtures(byte, byte, int);
 bool allHome();
+
 bool compareDMXArrays();
 void updateStepperDMX();
+void updateLEDDMX();
+void setBarColor(int, byte, byte, byte, byte);
+void setFixtureColor(byte, byte, byte, byte);
+void setAllColor(byte, byte, byte);
 bool updateDMX();
+
 void runSteppers();
 void stopWithError();
 
@@ -69,6 +111,9 @@ void setup() {
   for (byte i = 0; i < NUM_SWITCHES; i++) { pinMode(limitPins[i], INPUT_PULLUP); }
 
   // LED SETUP-----------------------------------------
+  leds.begin();
+  setAllColor(255, 255, 255);
+  leds.show();
 
   // DMX SETUP-----------------------------------------
   dmxRx.begin();
@@ -88,6 +133,7 @@ void loop() {
     floatLockTimer = 0;  // reset float locking timer
     kStepperTimeout = STEPPER_DMX_TIMEOUT; //set stepper timeout to 30 seconds
 
+    // STEPPERS-------------------------------------------------
     if (updateDMX()) { lastDMXChange = 0; statusLEDBrightness = 127; }  // if we see a DMX change, reset the counter
     statusLEDBrightness = LED_DMX_RX_ACTIVE;
     
@@ -95,6 +141,8 @@ void loop() {
     else { statusLEDBrightness = LED_DMX_RX_SLEEP; }
     // otherwise, we are't seeing any new data from lighting software, so ignore DMX, move to nearest holding lock, disable to save power, and hold there until new DMX
 
+    // LEDS-----------------------------------------------------
+    updateLEDDMX();
   } 
 
   // NO DMX---------------------------------
@@ -105,17 +153,28 @@ void loop() {
 
     statusLEDBrightness = LED_STDBY;
     analogWrite(statusLEDPin, statusLEDBrightness);
-    
+
+    // STEPPERS-------------------------------------------------
     if (allHome()) kStepperTimeout = 500; //if everything is at its endstops, timeout doesn't need to take forever.
     else kStepperTimeout = STEPPER_STANDALONE_TIMEOUT; //set stepper timeout to 10 seconds
-    
+
+    // LEDS-----------------------------------------------------
+    setAllColor(255, 255, 255);
   }
 
   analogWrite(statusLEDPin, statusLEDBrightness);
+  
 
   // STEPPER UPDATING----------------------
   runSteppers();
+
+  // LED UPDATING--------------------------
+  leds.show();
 }
+
+// END of MAIN=====================================================================
+
+
 
 void runSteppers() {
   int currentPos, newPos;
@@ -212,6 +271,38 @@ void updateStepperDMX() {
   }
 }
 
+void updateLEDDMX() {
+  int DMXOffset = 0;  // offset for DMX data
+    
+  for (int f = 0; f < NUM_LED_FIXTURES; f++) {                 // for each fixture
+    for (int b = 0; b < BARS_PER_FIXTURE; b++) {                       // for each bar in the fixture
+  
+        DMXOffset = (f * OPERATIONS_PER_FIXTURE) + (STEPPERS_PER_FIXTURE * OPERATIONS_PER_STEPPER) + (b * OPERATIONS_PER_BAR);  // and dmx data location
+        setBarColor(b, f, DMXData[DMXOffset], DMXData[DMXOffset+1], DMXData[DMXOffset+2]);  // set bar b at fixture f to the DMX values
+    }
+  }
+}
+
+void setAllColor(byte r, byte g, byte b) {
+  for (byte f = 0; f < NUM_LED_FIXTURES; f++) {
+    setFixtureColor(f, r, g, b);
+  }
+}
+
+void setFixtureColor(byte fixture, byte r, byte g, byte b) {
+  for (int ba = 0; ba < BARS_PER_FIXTURE; ba++) { // for each bar in the fixture
+    setBarColor(ba, fixture, r, g, b);  // set each bar color
+  }
+}
+
+void setBarColor(int bar, byte fixture, byte r, byte g, byte b) {
+  int ledOffset;
+  for (int pixel = 0; pixel < LEDS_PER_BAR; pixel++) { // for each pixel in the bar
+    ledOffset = (fixture * LEDS_PER_FIXTURE) + (bar * LEDS_PER_BAR) + pixel;   //calculate led position
+    leds.setPixel(ledOffset, r, g, b);                                       // update the pixel
+  }
+}
+
 bool updateDMX() {
   bool updateFlag = false;
   uint8_t current, compare;
@@ -237,8 +328,15 @@ void stopWithError() {
   
   while (true) {
     analogWrite(statusLEDPin, 1023);
+    setAllColor(255, 0, 0);
+    leds.show();
+    
     delay(1000);
+    
     analogWrite(statusLEDPin, 0);
+    setAllColor(50, 0, 0);
+    leds.show();
+    
     delay(1000);
   }
   

@@ -10,10 +10,12 @@
   #define DMX_START 1
 
 // Fixtures
-  #define NUM_FIXTURES 8
+  #define NUM_MOTOR_FIXTURES 8  // number of fixture nodes with motion capability
+  #define NUM_LED_FIXTURES 4    // number of fixture nodes with LED capability
+  
   
 // STEPPERS---------------
-  #define NUM_STEPPERS (NUM_FIXTURES)
+  #define NUM_STEPPERS (NUM_MOTOR_FIXTURES)
   #define NUM_SWITCHES (NUM_STEPPERS)
   #define MICROSTEPS 16
   #define DEFUALT_SPEED 3000
@@ -22,35 +24,34 @@
   #define STEPPER_MIN_SPEED 100
 
 // LEDs--------------------
-  #define LEDS_PER_FIXTURE 12
+  #define LEDS_PER_FIXTURE 25
   #define BARS_PER_FIXTURE 4
-  #define REFRESH_RATE_HZ 60
-  // Pin layouts on the teensy 3:
+
+  const byte LED_PIN_LIST[NUM_LED_FIXTURES] = {2, 14, 7, 8};  // sequencing of Teensy LED Pins
+
+    // Pin layouts on Arachnid Mainboard:
   /*
-   Required Connections
-  --------------------
-    pin 2:  LED Strip #1    OctoWS2811 drives 8 LED Strips.
-    pin 14: LED strip #2    All 8 are the same length.
+    DEFUALT CONFIGURATION
+    pin 2:  LED Strip #1
+    pin 14: LED strip #2   
     pin 7:  LED strip #3
-    pin 8:  LED strip #4    A 100 ohm resistor should used
-    pin 6:  LED strip #5    between each Teensy pin and the
-    pin 20: LED strip #6    wire to the LED strip, to minimize
-    pin 21: LED strip #7    high frequency ringining & noise.
+    pin 8:  LED strip #4   
+    pin 6:  LED strip #5   
+    pin 20: LED strip #6    
+    pin 21: LED strip #7    
     pin 5:  LED strip #8
-    pin 15 & 16 - Connect together, but do not use
-    pin 4 - Do not use
-    pin 3 - Do not use as PWM.  Normal use is ok.
-    */
+  */
 
 //ADVANCED================================================================
 
 // DMX-------------------------
-#define DMX_LENGTH ((BARS_PER_FIXTURE * 3) * NUM_FIXTURES) + NUM_STEPPERS
+#define DMX_LENGTH ((BARS_PER_FIXTURE * 3) * NUM_MOTOR_FIXTURES) + NUM_STEPPERS
 #define OPERATIONS_PER_BAR 3
 #define OPERATIONS_PER_FIXTURE (OPERATIONS_PER_STEPPER + (OPERATIONS_PER_BAR * BARS_PER_FIXTURE))  // assumes stepper-> light priority
 
 
 // STEPPERS--------------------
+#define STEPPERS_PER_FIXTURE 1
 #define OPERATIONS_PER_STEPPER 2
 
 #define STEPPER_DMX_TIMEOUT 30000
@@ -68,7 +69,7 @@
 
 // LED-------------------------
 
-#define LED_REFRESH (1000000 / REFRESH_RATE_HZ)
+#define NUM_LEDS (LEDS_PER_FIXTURE * NUM_LED_FIXTURES)
 #define LEDS_PER_BAR (LEDS_PER_FIXTURE / BARS_PER_FIXTURE)
 
 // SYSTEM----------------------
@@ -77,3 +78,6 @@
 #define LED_DMX_RX_ACTIVE 127
 #define LED_DMX_RX_SLEEP 10
 #define LED_STDBY 0
+
+#define HOME_COLOR 0X00FF11
+#define NON_HOME_COLOR 0x006EFF
