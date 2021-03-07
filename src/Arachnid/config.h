@@ -10,12 +10,12 @@
   #define DMX_START 1
 
 // Fixtures
-  #define NUM_MOTOR_FIXTURES 8  // number of fixture nodes with motion capability
+  #define NUM_MOTION_FIXTURES 8  // number of fixture nodes with motion capability
   #define NUM_LED_FIXTURES 4    // number of fixture nodes with LED capability
   
   
 // STEPPERS---------------
-  #define NUM_STEPPERS (NUM_MOTOR_FIXTURES)
+  #define NUM_STEPPERS (NUM_MOTION_FIXTURES)
   #define NUM_SWITCHES (NUM_STEPPERS)
   #define MICROSTEPS 16
   #define DEFUALT_SPEED 3000
@@ -45,7 +45,7 @@
 //ADVANCED================================================================
 
 // DMX-------------------------
-#define DMX_LENGTH ((BARS_PER_FIXTURE * 3) * NUM_MOTOR_FIXTURES) + NUM_STEPPERS
+#define DMX_LENGTH ((BARS_PER_FIXTURE * 3) * NUM_MOTION_FIXTURES) + NUM_STEPPERS
 #define OPERATIONS_PER_BAR 3
 #define OPERATIONS_PER_FIXTURE (OPERATIONS_PER_STEPPER + (OPERATIONS_PER_BAR * BARS_PER_FIXTURE))  // assumes stepper-> light priority
 
@@ -71,6 +71,7 @@
 
 #define NUM_LEDS (LEDS_PER_FIXTURE * NUM_LED_FIXTURES)
 #define LEDS_PER_BAR (LEDS_PER_FIXTURE / BARS_PER_FIXTURE)
+#define LED_REFRESH_MILLIS 16
 
 // SYSTEM----------------------
 #define STATUS_LED_PIN LED_BUILTIN

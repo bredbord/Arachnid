@@ -7,15 +7,16 @@
 // Libraries
 #include <TeensyDMX.h>
 #include <AccelStepper.h>
-#include "config.h"
-
 #include <OctoWS2811.h>
+
+#include "config.h"
 
 // Timers---------
 elapsedMillis lastFrameTimer;  // when last DMX frame was received -- for float Lock
 elapsedMillis floatLockTimer;  // timer for the float lock
 elapsedMillis lastStepperChange;    // when last stepper change
 elapsedMillis lastDMXChange;  // when the DMX last changed
+elapsedMillis lightUpdate; 
 
 bool floatLock = false;
 
@@ -50,12 +51,22 @@ OctoWS2811 leds(LEDS_PER_FIXTURE, displayMemory, drawingMemory, config, NUM_LED_
 
 byte ledColors[NUM_LEDS][3]{0};  // data for holding each pixel's data
 
+
+// COLOR ENCODING AND CORRECTION----------------------
+
+//encoding
+struct RGB {
+  byte red;
+  byte green;
+  byte blue;
+};
+
 // LED COLOR TEMP CORRECTIONS from FastLED
-/*
+
 enum LEDColorCorrection {
   TypicalSMD5050 =0xFFB0F0, TypicalLEDStrip =0xFFB0F0, Typical8mmPixel =0xFFE08C, TypicalPixelString =0xFFE08C,
   UncorrectedColor =0xFFFFFF
-}
+};
 
 enum ColorTemperature {
   Candle =0xFF9329, Tungsten40W =0xFFC58F, Tungsten100W =0xFFD6AA, Halogen =0xFFF1E0,
@@ -63,8 +74,7 @@ enum ColorTemperature {
   ClearBlueSky =0x409CFF, WarmFluorescent =0xFFF4E5, StandardFluorescent =0xF4FFFA, CoolWhiteFluorescent =0xD4EBFF,
   FullSpectrumFluorescent =0xFFF4F2, GrowLightFluorescent =0xFFEFF7, BlackLightFluorescent =0xA700FF, MercuryVapor =0xD8F7FF,
   SodiumVapor =0xFFD1B2, MetalHalide =0xF2FCFF, HighPressureSodium =0xFFB74C, UncorrectedTemperature =0xFFFFFF
-}
-*/
+};
 
 // DMX -----------------------------------------------
 namespace teensydmx = ::qindesign::teensydmx;
@@ -76,26 +86,41 @@ constexpr unsigned long kDMXTimeout = 100;  // Millis for considered DMX timeout
 constexpr unsigned long kFloatLockTimeout = 2000;  // Millis for Floating Lock timeout
 unsigned long kStepperTimeout;  // Millis for stepper timeout
 
-//END HARDWARE SETUP ======================
+//END HARDWARE SETUP =================================================================
 
 
 
 // PROTOTYPES-----------------------------------------
 
-bool homeFixtures(byte, byte, int);
-bool allHome();
+//Steppers
+bool homeFixtures(byte, byte, int);   // attempts to home all fixtures
+void enableSteppers(bool);
+void runSteppers();                   // updates stepper positions
+bool allHome();                       // reports if all fixtures are home
 
-bool compareDMXArrays();
-void updateStepperDMX();
-void updateLEDDMX();
+//LEDS
 void setBarColor(int, byte, byte, byte, byte);
 void setFixtureColor(byte, byte, byte, byte);
 void setAllColor(byte, byte, byte);
-bool updateDMX();
 
-void runSteppers();
+void setBarColor(int, byte, int);
+void setFixtureColor(byte, int);
+void setAllColor(int);
+
+RGB getRGBColor(int);
+
+//DMX
+bool updateDMX();
+void updateLEDDMX();
+void updateStepperDMX();
+
+//SYSTEM
 void stopWithError();
 
+
+// ================================================================================
+// ==================================BEGIN MAIN====================================
+// ================================================================================
 void setup() {
   
   // HARD CALL PIN SETUP-------------------------------
@@ -112,7 +137,7 @@ void setup() {
 
   // LED SETUP-----------------------------------------
   leds.begin();
-  setAllColor(255, 255, 255);
+  setAllColor(255, 0, 127);
   leds.show();
 
   // DMX SETUP-----------------------------------------
@@ -124,6 +149,7 @@ void setup() {
   if (!homeFixtures(1,1, 10000)) stopWithError();
 }
 
+// MAIN++++++++++++++++++++++++++++++++++++++++++++++++
 void loop() {
   int read = dmxRx.readPacket(DMXInput, DMX_START, DMX_START + DMX_LENGTH);
   if (read > 0) lastFrameTimer = 0;  // some DMX data received
@@ -159,7 +185,7 @@ void loop() {
     else kStepperTimeout = STEPPER_STANDALONE_TIMEOUT; //set stepper timeout to 10 seconds
 
     // LEDS-----------------------------------------------------
-    setAllColor(255, 255, 255);
+    setAllColor(Candle + TypicalLEDStrip);
   }
 
   analogWrite(statusLEDPin, statusLEDBrightness);
@@ -169,52 +195,24 @@ void loop() {
   runSteppers();
 
   // LED UPDATING--------------------------
-  leds.show();
-}
-
-// END of MAIN=====================================================================
-
-
-
-void runSteppers() {
-  int currentPos, newPos;
-
-  // check for any updates to position, update positions, and reset timeout if any occur
-  for (int s = 0; s < NUM_STEPPERS; s++) {
-    currentPos = stepperPositions[s];
-    newPos = newStepperPositions[s];  // updates continously* based on DMX
-    
-    if (currentPos != newPos) {  // if we have a new position request
-      stepperPositions[s] = newPos; // update position index
-      lastStepperChange = 0; // reset the timeout
-    }
-  }
-
-  // If we have not timed out-------------------------------
-  if (lastStepperChange < kStepperTimeout) {
-    if (!steppersEnabled) { enableSteppers(true); delay(10); }  // if the steppers are not enabled, enable and allow hardware catch up
-
-    if (lastStepperChange > kStepperTimeout - MOTION_TIMEOUT_DURATION) { 
-      int lockVal;
-      for (int h = 0; h < NUM_STEPPERS; h++) {
-        lockVal = 0;
-        stepperPositions[h] = lockVal;
-        newStepperPositions[h] = lockVal;
-      }
-    }
-    
-    for (byte m = 0; m < NUM_STEPPERS; m++) { stepper[m]->moveTo(stepperPositions[m]); }
-    for (byte m = 0; m < NUM_STEPPERS; m++) { stepper[m]->run(); }
-  } 
-
-  // Otherwise--------------------------------
-   else {
-    enableSteppers(false);
+  if (lightUpdate > LED_REFRESH_MILLIS) {
+    leds.show(); lightUpdate = 0;
   }
 }
 
-// This function will move all fixtures to their endstops, and reset stepper positions if succesful. Returns true for succesful homing, false if not.
+// ================================================================================
+// ==================================END OF MAIN===================================
+// ================================================================================
+
+
+
+// ================================================================================
+// =============================ADDITIONAL FUNCTIONS===============================
+// ================================================================================
+
+// STEPPERS===========================================
 bool homeFixtures(byte startStep, byte stopStep, int homeTimer) {
+  
   startStep--; stopStep--;
   unsigned long currentTime = millis();  // time of homing start
   bool allHome;  // all home flag
@@ -253,6 +251,123 @@ void enableSteppers(bool state) {
   }
 }
 
+void runSteppers() {
+  int currentPos, newPos;
+
+  // check for any updates to position, update positions, and reset timeout if any occur
+  for (int s = 0; s < NUM_STEPPERS; s++) {
+    currentPos = stepperPositions[s];
+    newPos = newStepperPositions[s];  // updates continously* based on DMX
+    
+    if (currentPos != newPos) {  // if we have a new position request
+      stepperPositions[s] = newPos; // update position index
+      lastStepperChange = 0; // reset the timeout
+    }
+  }
+
+  // If we have not timed out-------------------------------
+  if (lastStepperChange < kStepperTimeout) {
+    if (!steppersEnabled) { enableSteppers(true); delay(10); }  // if the steppers are not enabled, enable and allow hardware catch up
+
+    if (lastStepperChange > kStepperTimeout - MOTION_TIMEOUT_DURATION) { 
+      int lockVal;
+      for (int h = 0; h < NUM_STEPPERS; h++) {
+        lockVal = 0;
+        stepperPositions[h] = lockVal;
+        newStepperPositions[h] = lockVal;
+      }
+    }
+    
+    for (byte m = 0; m < NUM_STEPPERS; m++) { stepper[m]->moveTo(stepperPositions[m]); }
+    for (byte m = 0; m < NUM_STEPPERS; m++) { stepper[m]->run(); }
+  } 
+
+  // Otherwise--------------------------------
+   else {
+    enableSteppers(false);
+  }
+}
+
+bool allHome() {
+  for (byte s = 0; s <= NUM_STEPPERS; s++) {  // check each stepper
+    if (!digitalRead(limitPins[s]) == LOW) return false;  // for triggered limit switch
+  }
+  return true;
+}
+
+
+
+// LEDS===============================================
+void setBarColor(int bar, byte fixture, byte r, byte g, byte b) {
+  
+  int ledOffset; bar--; fixture--;
+  for (int pixel = 0; pixel < LEDS_PER_BAR; pixel++) { // for each pixel in the bar
+    ledOffset = (fixture * LEDS_PER_FIXTURE) + (bar * LEDS_PER_BAR) + pixel;   //calculate led position
+    leds.setPixel(ledOffset, r, g, b);                                       // update the pixel
+  }
+}
+void setBarColor(int bar, byte fixture, int hex) {
+  RGB c =  getRGBColor(hex);
+  setBarColor(bar, fixture, c.red, c.green, c.blue);
+}
+
+void setFixtureColor(byte fixture, byte r, byte g, byte b) {
+  for (int ba = 1; ba <= BARS_PER_FIXTURE; ba++) { // for each bar in the fixture
+    setBarColor(ba, fixture, r, g, b);  // set each bar color
+  }
+}
+void setFixtureColor(byte fixture, int hex) {
+  RGB c =  getRGBColor(hex);
+  setFixtureColor(fixture, c.red, c.green, c.blue);
+}
+
+void setAllColor(byte r, byte g, byte b) {
+  for (byte f = 1; f <= NUM_LED_FIXTURES; f++) {
+    setFixtureColor(f, r, g, b);
+  }
+}
+void setAllColor(int hex){
+  RGB c =  getRGBColor(hex);
+  setAllColor(c.red, c.green, c.blue);
+}
+
+RGB getRGBColor(int h) {
+  RGB rgb =  {
+    ((h >> 16) & 0xFF) / 255.0,
+    ((h >> 8) & 0xFF) / 255.0,
+    ((h) & 0xFF) / 255.0
+  };
+
+  return rgb;
+}
+
+
+// DMX================================================
+bool updateDMX() {
+  bool updateFlag = false;
+  uint8_t current, compare;
+  
+  // Compare the array
+  for (int c = 0; c < DMX_LENGTH; c++) {
+    current = DMXData[c]; compare = DMXInput[c];
+    if (current != compare) { DMXData[c] = compare; updateFlag = true; }  // if there was a change, note it and trigger update flag
+  }
+
+  return updateFlag;
+}
+
+void updateLEDDMX() {
+  int DMXOffset;  // offset for DMX data
+    
+  for (int f = 1; f <= NUM_LED_FIXTURES; f++) {                 // for each fixture
+    for (int b = 1; b <= BARS_PER_FIXTURE; b++) {                       // for each bar in the fixture
+  
+        DMXOffset = (((b-1) * OPERATIONS_PER_BAR) + OPERATIONS_PER_STEPPER) * f;  // and dmx data location
+        setBarColor(b, f, DMXData[DMXOffset], DMXData[DMXOffset+1], DMXData[DMXOffset+2]);  // set bar b at fixture f to the DMX values
+    }
+  }
+}
+
 void updateStepperDMX() {
   int speedTarget, motionTarget;
   byte DMXOffset;
@@ -271,58 +386,9 @@ void updateStepperDMX() {
   }
 }
 
-void updateLEDDMX() {
-  int DMXOffset = 0;  // offset for DMX data
-    
-  for (int f = 0; f < NUM_LED_FIXTURES; f++) {                 // for each fixture
-    for (int b = 0; b < BARS_PER_FIXTURE; b++) {                       // for each bar in the fixture
-  
-        DMXOffset = (f * OPERATIONS_PER_FIXTURE) + (STEPPERS_PER_FIXTURE * OPERATIONS_PER_STEPPER) + (b * OPERATIONS_PER_BAR);  // and dmx data location
-        setBarColor(b, f, DMXData[DMXOffset], DMXData[DMXOffset+1], DMXData[DMXOffset+2]);  // set bar b at fixture f to the DMX values
-    }
-  }
-}
 
-void setAllColor(byte r, byte g, byte b) {
-  for (byte f = 0; f < NUM_LED_FIXTURES; f++) {
-    setFixtureColor(f, r, g, b);
-  }
-}
 
-void setFixtureColor(byte fixture, byte r, byte g, byte b) {
-  for (int ba = 0; ba < BARS_PER_FIXTURE; ba++) { // for each bar in the fixture
-    setBarColor(ba, fixture, r, g, b);  // set each bar color
-  }
-}
-
-void setBarColor(int bar, byte fixture, byte r, byte g, byte b) {
-  int ledOffset;
-  for (int pixel = 0; pixel < LEDS_PER_BAR; pixel++) { // for each pixel in the bar
-    ledOffset = (fixture * LEDS_PER_FIXTURE) + (bar * LEDS_PER_BAR) + pixel;   //calculate led position
-    leds.setPixel(ledOffset, r, g, b);                                       // update the pixel
-  }
-}
-
-bool updateDMX() {
-  bool updateFlag = false;
-  uint8_t current, compare;
-  
-  // Compare the array
-  for (int c = 0; c < DMX_LENGTH; c++) {
-    current = DMXData[c]; compare = DMXInput[c];
-    if (current != compare) { DMXData[c] = compare; updateFlag = true; }  // if there was a change, note it and trigger update flag
-  }
-
-  return updateFlag;
-}
-
-bool allHome() {
-  for (byte s = 0; s <= NUM_STEPPERS; s++) {  // check each stepper
-    if (!digitalRead(limitPins[s]) == LOW) return false;  // for triggered limit switch
-  }
-  return true;
-}
-
+// SYSTEM============================================
 void stopWithError() {
   enableSteppers(false);
   
