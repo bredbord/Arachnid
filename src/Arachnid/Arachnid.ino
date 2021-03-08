@@ -61,21 +61,6 @@ struct RGB {
   byte blue;
 };
 
-// LED COLOR TEMP CORRECTIONS from FastLED
-
-enum LEDColorCorrection {
-  TypicalSMD5050 =0xFFB0F0, TypicalLEDStrip =0xFFB0F0, Typical8mmPixel =0xFFE08C, TypicalPixelString =0xFFE08C,
-  UncorrectedColor =0xFFFFFF
-};
-
-enum ColorTemperature {
-  Candle =0xFF9329, Tungsten40W =0xFFC58F, Tungsten100W =0xFFD6AA, Halogen =0xFFF1E0,
-  CarbonArc =0xFFFAF4, HighNoonSun =0xFFFFFB, DirectSunlight =0xFFFFFF, OvercastSky =0xC9E2FF,
-  ClearBlueSky =0x409CFF, WarmFluorescent =0xFFF4E5, StandardFluorescent =0xF4FFFA, CoolWhiteFluorescent =0xD4EBFF,
-  FullSpectrumFluorescent =0xFFF4F2, GrowLightFluorescent =0xFFEFF7, BlackLightFluorescent =0xA700FF, MercuryVapor =0xD8F7FF,
-  SodiumVapor =0xFFD1B2, MetalHalide =0xF2FCFF, HighPressureSodium =0xFFB74C, UncorrectedTemperature =0xFFFFFF
-};
-
 // DMX -----------------------------------------------
 namespace teensydmx = ::qindesign::teensydmx;
 teensydmx::Receiver dmxRx{Serial1};
@@ -100,14 +85,20 @@ bool allHome();                       // reports if all fixtures are home
 
 //LEDS
 void setBarColor(int, byte, byte, byte, byte);
-void setFixtureColor(byte, byte, byte, byte);
-void setAllColor(byte, byte, byte);
-
 void setBarColor(int, byte, int);
+
+void setFixtureColor(byte, byte, byte, byte);
 void setFixtureColor(byte, int);
+
+void setAllColor(byte, byte, byte);
 void setAllColor(int);
 
-RGB getRGBColor(int);
+void setBarTemperature(int, byte, int);
+void setFixturetemperature(byte, int);
+void setAllTemperature(int);
+
+RGB hexToRGB(int);
+
 
 //DMX
 bool updateDMX();
@@ -178,26 +169,24 @@ void loop() {
     if (floatLock && floatLockTimer > kFloatLockTimeout) floatLock = false;  // if we are in floatLock, and the locking timer has expired, release the lock
 
     statusLEDBrightness = LED_STDBY;
-    analogWrite(statusLEDPin, statusLEDBrightness);
 
     // STEPPERS-------------------------------------------------
     if (allHome()) kStepperTimeout = 500; //if everything is at its endstops, timeout doesn't need to take forever.
     else kStepperTimeout = STEPPER_STANDALONE_TIMEOUT; //set stepper timeout to 10 seconds
 
     // LEDS-----------------------------------------------------
-    setAllColor(Candle + TypicalLEDStrip);
+    setAllTemperature(Candle);
   }
-
-  analogWrite(statusLEDPin, statusLEDBrightness);
   
 
   // STEPPER UPDATING----------------------
   runSteppers();
 
   // LED UPDATING--------------------------
-  if (lightUpdate > LED_REFRESH_MILLIS) {
-    leds.show(); lightUpdate = 0;
-  }
+  if (lightUpdate > LED_REFRESH_MILLIS) { leds.show(); lightUpdate = 0; }
+
+  // SYSTEM UPDATES------------------------
+  analogWrite(statusLEDPin, statusLEDBrightness);
 }
 
 // ================================================================================
@@ -262,6 +251,7 @@ void runSteppers() {
     if (currentPos != newPos) {  // if we have a new position request
       stepperPositions[s] = newPos; // update position index
       lastStepperChange = 0; // reset the timeout
+      
     }
   }
 
@@ -306,19 +296,19 @@ void setBarColor(int bar, byte fixture, byte r, byte g, byte b) {
     leds.setPixel(ledOffset, r, g, b);                                       // update the pixel
   }
 }
-void setBarColor(int bar, byte fixture, int hex) {
-  RGB c =  getRGBColor(hex);
-  setBarColor(bar, fixture, c.red, c.green, c.blue);
+void setBarColor(int bar, byte fixture, int c) {
+  RGB tripple = hexToRGB(c);
+  setBarColor(bar, fixture, tripple.red, tripple.green, tripple.blue);
 }
 
 void setFixtureColor(byte fixture, byte r, byte g, byte b) {
-  for (int ba = 1; ba <= BARS_PER_FIXTURE; ba++) { // for each bar in the fixture
+  for (int ba = 1, pix =0; ba <= BARS_PER_FIXTURE && pix < LEDS_PER_FIXTURE; ba++, pix+= LEDS_PER_BAR) { // for each bar in the fixture while we don't exceed the bars
     setBarColor(ba, fixture, r, g, b);  // set each bar color
   }
 }
-void setFixtureColor(byte fixture, int hex) {
-  RGB c =  getRGBColor(hex);
-  setFixtureColor(fixture, c.red, c.green, c.blue);
+void setFixtureColor(byte fixture, int c) {
+  RGB tripple = hexToRGB(c);
+  setFixtureColor(fixture, tripple.red, tripple.green, tripple.blue);
 }
 
 void setAllColor(byte r, byte g, byte b) {
@@ -326,20 +316,32 @@ void setAllColor(byte r, byte g, byte b) {
     setFixtureColor(f, r, g, b);
   }
 }
-void setAllColor(int hex){
-  RGB c =  getRGBColor(hex);
-  setAllColor(c.red, c.green, c.blue);
+void setAllColor(int c) {
+  RGB tripple = hexToRGB(c);
+  setAllColor(tripple.red, tripple.green, tripple.blue);
 }
 
-RGB getRGBColor(int h) {
-  RGB rgb =  {
-    ((h >> 16) & 0xFF) / 255.0,
-    ((h >> 8) & 0xFF) / 255.0,
-    ((h) & 0xFF) / 255.0
+void setBarTemperature(int bar, byte fixture, int temp) {
+  setBarColor(bar, fixture, temp + TEMPERATURE_OFFSET);
+}
+void setFixtureTemperature(byte fixture, int temp) {
+  setFixtureColor(fixture, temp + TEMPERATURE_OFFSET);
+}
+void setAllTemperature(int temp) {
+  setAllColor(temp + TEMPERATURE_OFFSET);
+}
+
+RGB hexToRGB(int hex) {
+  RGB t = {
+    (hex >> 16) & 0xFF, // RR byte
+    (hex >> 8) & 0xFF, // GG byte
+    (hex) & 0xFF // BB byte
   };
 
-  return rgb;
+  return t;
 }
+
+
 
 
 // DMX================================================

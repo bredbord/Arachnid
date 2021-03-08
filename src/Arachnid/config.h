@@ -4,6 +4,8 @@
  * Version 3.0
 */
 
+#include "color.h"
+
 // BASIC SETUP============================================================
 
 // DMX--------------------
@@ -25,7 +27,8 @@
 
 // LEDs--------------------
   #define LEDS_PER_FIXTURE 25
-  #define BARS_PER_FIXTURE 4
+  #define BARS_PER_FIXTURE 12
+  #define TEMPERATURE_OFFSET TypicalLEDStrip
 
   const byte LED_PIN_LIST[NUM_LED_FIXTURES] = {2, 14, 7, 8};  // sequencing of Teensy LED Pins
 
@@ -45,10 +48,8 @@
 //ADVANCED================================================================
 
 // DMX-------------------------
-#define DMX_LENGTH ((BARS_PER_FIXTURE * 3) * NUM_MOTION_FIXTURES) + NUM_STEPPERS
 #define OPERATIONS_PER_BAR 3
 #define OPERATIONS_PER_FIXTURE (OPERATIONS_PER_STEPPER + (OPERATIONS_PER_BAR * BARS_PER_FIXTURE))  // assumes stepper-> light priority
-
 
 // STEPPERS--------------------
 #define STEPPERS_PER_FIXTURE 1
@@ -75,6 +76,8 @@
 
 // SYSTEM----------------------
 #define STATUS_LED_PIN LED_BUILTIN
+
+#define DMX_LENGTH (((BARS_PER_FIXTURE * OPERATIONS_PER_BAR) * NUM_LED_FIXTURES) + (NUM_STEPPERS * OPERATIONS_PER_STEPPER))
 
 #define LED_DMX_RX_ACTIVE 127
 #define LED_DMX_RX_SLEEP 10
