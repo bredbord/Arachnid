@@ -6,14 +6,12 @@
 
 // Libraries
 #include <TeensyDMX.h>
-#include <OctoWS2811.h>
 #include <SafetyStepperArray.h>
 
 #include "config.h"
 
 // Timers---------
 elapsedMillis lastFrameTimer;  // when last DMX frame was received -- for float Lock
-elapsedMillis floatLockTimer;  // timer for the float lock
 elapsedMillis lightUpdate;
 
 bool floatLock = false;
@@ -55,10 +53,9 @@ struct RGB {
 namespace teensydmx = ::qindesign::teensydmx;
 teensydmx::Receiver dmxRx{Serial1};
 uint8_t DMXData[DMX_LENGTH]{0};
-uint8_t DMXInput[DMX_LENGTH]{0};  // future buffering
 
-constexpr unsigned long kDMXTimeout = 100;  // Millis for considered DMX timeout
-constexpr unsigned long kFloatLockTimeout = 2000;  // Millis for Floating Lock timeout
+#define IMMEDIATE_DMX_TIMEOUT 100   // Millis for considered DMX timeout
+#define FLOAT_LOCK_TIMEOUT 2000  // Millis for Floating Lock timeout
 
 //END HARDWARE SETUP =================================================================
 
@@ -99,6 +96,7 @@ void setup() {
   
   // HARD CALL PIN SETUP-------------------------------
   pinMode(statusLEDPin, OUTPUT);
+  digitalWrite(13, LOW);
 
   // Cardinal Setup------------------------------------
   cardinal.addStepper(10, 9, 11);
@@ -120,45 +118,45 @@ void setup() {
 
   // DMX SETUP-----------------------------------------
   dmxRx.begin();
-  lastFrameTimer = kDMXTimeout;
+  lastFrameTimer = IMMEDIATE_DMX_TIMEOUT;
 
 
   // Hardware Calibration------------------------------
-  if (!cardinal.homeSteppers(1,1,10000)) stopWithError();
+  //if (!cardinal.homeSteppers(1,1,10000)) stopWithError();
 }
 
 // MAIN++++++++++++++++++++++++++++++++++++++++++++++++
 void loop() {
+  
   int read = dmxRx.readPacket(DMXData, DMX_START, DMX_START + DMX_LENGTH);
-  if (read > 0) lastFrameTimer = 0;  // some DMX data received
+  
+  if (read > 0 && !floatLock) { lastFrameTimer = 0; }  // We are cont. receiving DMX, so reset counter and unlock
+  else if (lastFrameTimer >= IMMEDIATE_DMX_TIMEOUT && lastFrameTimer <= FLOAT_LOCK_TIMEOUT) floatLock = true;  //if we are in between the "noise" zone, lock
+
+  if (lastFrameTimer > FLOAT_LOCK_TIMEOUT) { floatLock = false; }  // if we move outside the noise zone, unlock.
 
   // DMX------------------------------------
-  if (!floatLock && lastFrameTimer <= kDMXTimeout) { // if we are not in floatLock, and the DMX connection is valid
-    floatLockTimer = 0;  // reset float locking timer
+  if (!floatLock && lastFrameTimer < IMMEDIATE_DMX_TIMEOUT) { // if we are not in floatLock, and the DMX connection is valid
     
-    // Do when receiving DMX=======================
-    
+    digitalWrite(13, HIGH);
     cardinal.setTimeoutMillis(10000);
     updateStepperDMX();
-    updateLEDDMX();
+    //updateLEDDMX();
   } 
 
   // NO DMX---------------------------------
   else {
-    // DMX Float Locking
-    if (!floatLock && floatLockTimer < kDMXTimeout * 2) floatLock = true; // if the floatLock is not enabled, and the disconection just started, enable the lock
-    if (floatLock && floatLockTimer > kFloatLockTimeout) floatLock = false;  // if we are in floatLock, and the locking timer has expired, release the lock
-
-    // Do when not receiving DMX=====================
-    
+    digitalWrite(13, LOW);
     cardinal.setTimeoutMillis(3000);
     for (short s = 1; s <= NUM_STEPPERS; s++) { cardinal.setStepperSpeed(s, 1000 * MICROSTEPS); cardinal.setStepperPosition(s, 0); }
-    
+    setAllTemperature(Candle);
   }
-  
+
+  // LEDS----------------------------------
+   //if (lightUpdate > LED_REFRESH_MILLIS) { leds.show(); lightUpdate = 0; }
 
   // STEPPER UPDATING----------------------
-  cardinal.run();
+  //cardinal.run();
   
 }
 
@@ -237,8 +235,8 @@ void updateLEDDMX() {
   for (int f = 1; f <= NUM_LED_FIXTURES; f++) {                 // for each fixture
     for (int b = 1; b <= BARS_PER_FIXTURE; b++) {                       // for each bar in the fixture
   
-        //DMXOffset = (((b-1) * OPERATIONS_PER_BAR) + OPERATIONS_PER_STEPPER) * f;  // and dmx data location
-        DMXOffset = (NUM_STEPPERS * OPERATIONS_PER_STEPPER) + ((b-1) * OPERATIONS_PER_BAR) * f;
+        DMXOffset = (((b-1) * OPERATIONS_PER_BAR) + OPERATIONS_PER_STEPPER) * f;  // and dmx data location
+        //DMXOffset = (NUM_STEPPERS * OPERATIONS_PER_STEPPER) + ((b-1) * OPERATIONS_PER_BAR) * f;
         setBarColor(b, f, DMXData[DMXOffset], DMXData[DMXOffset+1], DMXData[DMXOffset+2]);  // set bar b at fixture f to the DMX values
     }
   }
@@ -249,15 +247,14 @@ void updateStepperDMX() {
   byte DMXOffset;
   
   for (short s = 0; s < NUM_STEPPERS; s++) {
-    //DMXOffset = (s * OPERATIONS_PER_FIXTURE);  // calculate the DMX data location
-    DMXOffset = (OPERATIONS_PER_STEPPER * s);
+    DMXOffset = (s * OPERATIONS_PER_FIXTURE) + DMX_START;  // calculate the DMX data location
+    //DMXOffset = (OPERATIONS_PER_STEPPER * s);
     // Speed Section-------------------------------------------------------
-    if(DMXData[DMXOffset + 1] == 0) speedTarget = DEFUALT_MAX_SPEED;
-    else speedTarget = map(DMXData[DMXOffset+1], 1, 255, ABS_STEPPER_MIN_SPEED, ABS_STEPPER_MAX_SPEED);
-    cardinal.setStepperSpeed(s+1, speedTarget);
+
+    //cardinal.setStepperSpeed(s+1, speedTarget);
 
     // Motion Section------------------------------------------------------
-    motionTarget = DMXData[DMXOffset] * MICROSTEPS*4;  // get the new stepper position
+    motionTarget = DMXData[DMXOffset - 1] * MICROSTEPS*4;  // get the new stepper position
     cardinal.setStepperPosition(s+1, motionTarget);
   }
 }
